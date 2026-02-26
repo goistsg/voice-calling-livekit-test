@@ -1,14 +1,26 @@
 import { Request, Response } from 'express';
-import { EgressServiceClient, EncodedFileOutput } from 'livekit-server-sdk';
+import { EgressClient, EncodedFileOutput, EncodedFileType } from 'livekit-server-sdk';
 
-const apiKey = process.env.LIVEKIT_API_KEY;
-const apiSecret = process.env.LIVEKIT_API_SECRET;
-const livekitUrl = process.env.LIVEKIT_URL;
+const getEgressClient = () => {
+    const apiKey = process.env.LIVEKIT_API_KEY;
+    const apiSecret = process.env.LIVEKIT_API_SECRET;
+    let livekitUrl = process.env.LIVEKIT_URL;
 
-const egressClient = new EgressServiceClient(livekitUrl!, apiKey, apiSecret);
+    if (!apiKey || !apiSecret || !livekitUrl) {
+        throw new Error('LiveKit credentials or URL not configured in environment variables');
+    }
+
+    // Normaliza wss:// para https:// para o EgressClient
+    if (livekitUrl.startsWith('wss://')) {
+        livekitUrl = livekitUrl.replace('wss://', 'https://');
+    }
+
+    return new EgressClient(livekitUrl, apiKey, apiSecret);
+};
 
 export const startRecording = async (req: Request, res: Response) => {
     try {
+        const egressClient = getEgressClient();
         const { roomName } = req.body;
 
         if (!roomName) {
@@ -20,18 +32,21 @@ export const startRecording = async (req: Request, res: Response) => {
 
         const output = new EncodedFileOutput({
             filepath: filename,
-            s3: {
-                accessKey: process.env.AWS_ACCESS_KEY!,
-                secret: process.env.AWS_SECRET!,
-                region: process.env.AWS_REGION!,
-                bucket: process.env.S3_BUCKET!,
+            fileType: EncodedFileType.MP3,
+            output: {
+                case: 's3',
+                value: {
+                    accessKey: process.env.AWS_ACCESS_KEY,
+                    secret: process.env.AWS_SECRET,
+                    region: process.env.AWS_REGION,
+                    bucket: process.env.S3_BUCKET,
+                },
             },
         });
 
         // RoomCompositeEgress with audio-only (MP3)
-        const info = await egressClient.startRoomCompositeEgress(roomName, {
+        const info = await egressClient.startRoomCompositeEgress(roomName, output, {
             audioOnly: true,
-            file: output,
         });
 
         res.json({ egressId: info.egressId });
@@ -43,14 +58,15 @@ export const startRecording = async (req: Request, res: Response) => {
 
 export const stopRecording = async (req: Request, res: Response) => {
     try {
+        const egressClient = getEgressClient();
         const { egressId } = req.body;
 
         if (!egressId) {
             return res.status(400).json({ error: 'egressId is required' });
         }
 
-        await egressClient.stopEgress(egressId);
-        res.json({ status: 'stopped' });
+        const info = await egressClient.stopEgress(egressId);
+        res.json({ status: 'stopped', info });
     } catch (error) {
         console.error('Error stopping recording:', error);
         res.status(500).json({ error: 'Failed to stop recording' });
